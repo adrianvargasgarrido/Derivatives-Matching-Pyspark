@@ -590,15 +590,46 @@ Simple aggregation cell: adds `greedy1_count + greedy2_count = total_greedy` for
 ### Section 15 — Final Consolidation
 
 ```python
-all_matches = brd_matches.unionByName(greedy1_matches).unionByName(greedy2_matches)
+all_matches = (
+    brd_matches
+    .unionByName(greedy1_matches)
+    .unionByName(greedy2_matches)
+    .dropDuplicates(["axis_id"])   # each axis trade can only have one match
+    .dropDuplicates(["fin_id"])    # each fin trade can only have one match
+)
+
+# Cross-layer uniqueness assertion (one Spark job)
+actual_count = all_matches.count()
+if actual_count != total_matched:
+    print(f"⚠️  WARNING: {total_matched - actual_count:,} cross-layer duplicates removed.")
+else:
+    print("✅ Cross-layer uniqueness check PASSED.")
 
 final_unmatched_axis = axis_core.join(all_matches.select("axis_id"), "axis_id", "left_anti")
 final_unmatched_fin  = fin_core.join( all_matches.select("fin_id"),  "fin_id",  "left_anti")
 ```
 
-**What it does:** Unions all three match DataFrames into `all_matches`, then computes final unmatched sets.
+**What it does:** Unions all three match DataFrames into `all_matches` with a **two-stage deduplication guard**, verifies uniqueness with a single aggregation pass, then computes the final unmatched sets.
 
-> ⚡ **Performance note:** `total_matched` is derived arithmetically from `brd_match_count + greedy1_count + greedy2_count` — already computed in prior sections. Similarly, `unmatched_axis_count = ORIGINAL_AXIS_COUNT - total_matched`. Neither requires a new Spark job. Only `unmatched_fin_count` requires a scan (deferred to the save step). This eliminates three `.count()` calls that were previously triggered here.
+#### Cross-layer deduplication guard
+
+The matching pipeline enforces exclusivity at each layer via chained **anti-joins**:
+
+| Layer | Input pool | Excluded IDs |
+|---|---|---|
+| BRD (Layer 1) | Full `axis_core` / `fin_core` | None — first layer |
+| Greedy S1 (Layer 2) | `axis_unmatched` / `fin_unmatched` | `brd_matches` axis_id + fin_id |
+| Greedy S2 (Layer 2) | `axis_remaining_s2` / `fin_remaining_s2` | Greedy S1 axis_id + fin_id (on top of BRD) |
+
+Because each pool is built with a `left_anti` join against the prior layer's output, **no `axis_id` or `fin_id` should appear in more than one layer**. The `dropDuplicates` calls and the runtime assertion act as a **defence-in-depth** guard:
+
+- If all anti-joins worked correctly → `actual_count == total_matched` → ✅ assertion passes
+- If any edge case slipped through → `dropDuplicates` silently removes the collision, and the warning prints → investigation required
+
+**Why `.dropDuplicates(["axis_id"])` then `.dropDuplicates(["fin_id"])` separately:**  
+Calling `.dropDuplicates(["axis_id", "fin_id"])` would only remove rows where **both** IDs are identical — it would not catch the case where the same `axis_id` paired with two different `fin_id` values across layers. Two separate single-column `dropDuplicates` calls ensure each ID appears at most once from either side.
+
+> ⚡ **Performance note:** `total_matched` is derived arithmetically from `brd_match_count + greedy1_count + greedy2_count` — already computed in prior sections. The single `.count()` on `all_matches` serves double duty: it materialises the `MEMORY_AND_DISK` cache AND performs the uniqueness check. This replaces three separate `.count()` calls that were previously triggered here.
 
 **Why the schema is guaranteed consistent:**  
 All three DataFrames were produced with the **same column list** in the same order:
@@ -616,6 +647,8 @@ It is consumed by the enrichment join (Section 16), the system breakdown (Sectio
 ```python
 all_matches.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/matched_all_base")
 brd_matches.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/matched_brd_layer")
+# Greedy: filter from already-deduplication-guarded all_matches (not a fresh re-union)
+greedy_all_df = all_matches.filter(F.col("MatchLayer") == "GREEDY")
 greedy_all_df.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/matched_greedy_layer")
 final_unmatched_axis.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/unmatched_axis_base")
 final_unmatched_fin.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/unmatched_finstore_base")
@@ -1117,6 +1150,7 @@ CSV Files (axis_sample_poc.csv, finstore_sample_poc.csv)
 | **Base data save** | None | Narrow Delta tables saved in Section 15b before enrichment | Results available 10–20 min earlier; fast downstream queries |
 | **Report save** | `sparkContext.parallelize().saveAsTextFile()` | `dbutils.fs.put()` driver-side call | Eliminates 1 unnecessary Spark job |
 | **Delta write quality** | N/A | `optimizeWrite` + `autoCompact` enabled | No small-file problem; tables stay performant without manual OPTIMIZE |
+| **Cross-layer deduplication guard** | None (mutations could silently double-match) | `dropDuplicates(["axis_id"])` + `dropDuplicates(["fin_id"])` + runtime assertion | Zero possibility of a trade appearing in two match layers |
 | **Output format** | CSV | Delta Lake (ACID, time-travel, ZORDER) | Queryable, rollback-capable, schema-enforced |
 | **Auditability** | No lineage columns | `run_id`, `batch_id`, `rule_version`, `match_timestamp` on every row | Full run traceability for regulatory audit |
 | **Explainability** | None | `unmatched_reason` classification on every unmatched trade | Enables targeted remediation vs. broad investigation |
