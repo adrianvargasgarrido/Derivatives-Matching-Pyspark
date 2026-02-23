@@ -1,47 +1,79 @@
 # Derivatives Matching Engine — PySpark Notebook Technical Guide
 
-**Version:** v4.0-pyspark  
+**Version:** v4.1-pyspark  
 **Date:** 2026-02-23  
 **Notebook:** `Derivatives_Matching_PySpark.ipynb`  
-**Reference:** BRD Derivatives Matching Specification, `best_practices.md`, `matching_rules.md`
+**Reference:** BRD Derivatives Matching Specification, `best_practices.md`, `matching_rules.md`  
+**Cluster:** Databricks Runtime 16.4 LTS — 122 GB RAM, 16 cores, 2–10 workers
 
 ---
 
 ## Table of Contents
 
-1. [Overview & Architecture](#1-overview--architecture)
-2. [Why Not Just "Port the Pandas Notebook"?](#2-why-not-just-port-the-pandas-notebook)
-3. [Section-by-Section Walkthrough](#3-section-by-section-walkthrough)
-   - [Section 1 — Spark Session & Configuration](#section-1--spark-session--configuration)
-   - [Section 2 — BRD Constants & System Classifications](#section-2--brd-constants--system-classifications)
-   - [Section 3 — Matching Rule Definitions](#section-3--matching-rule-definitions)
-   - [Section 4 — Load Data (Bronze Layer)](#section-4--load-data-bronze-layer)
-   - [Section 5 — Scope Exclusion](#section-5--scope-exclusion)
-   - [Section 6 — Silver Layer Derivations](#section-6--silver-layer-derivations)
-   - [Section 7 — Core / Wide Split](#section-7--core--wide-split)
-   - [Section 8 — Candidate Generation Function](#section-8--candidate-generation-function)
-   - [Section 9 — Generate All BRD Candidates](#section-9--generate-all-brd-candidates)
-   - [Section 10 — 1-to-1 Resolution via Window Ranking](#section-10--1-to-1-resolution-via-window-ranking)
-   - [Section 11 — Compute Unmatched Pools for Greedy](#section-11--compute-unmatched-pools-for-greedy)
-   - [Section 12 — Greedy Strategy 1: Amount + Counterparty](#section-12--greedy-strategy-1-amount--counterparty-1)
-   - [Section 13 — Greedy Strategy 2: Amount Only (Bucket Blocking)](#section-13--greedy-strategy-2-amount-only-01)
-   - [Section 14 — Greedy Layer Summary](#section-14--greedy-layer-summary)
-   - [Section 15 — Final Consolidation](#section-15--final-consolidation)
-   - [Section 16 — Enrichment: Join Back Wide Columns](#section-16--enrichment-join-back-wide-columns)
-   - [Section 17 — Matches by System Breakdown](#section-17--matches-by-system-breakdown)
-   - [Section 18 — Remaining Unmatched by System](#section-18--remaining-unmatched-by-system)
-   - [Section 18b — Data Quality Validation](#section-18b--data-quality-validation)
-   - [Section 18c — Explainability: Unmatched Reason Breakdown](#section-18c--explainability-unmatched-reason-breakdown)
-   - [Section 19 — Save Results](#section-19--save-results)
-   - [Section 20 — Summary Report](#section-20--summary-report)
-   - [Section 21 — Cleanup](#section-21--cleanup)
-4. [All 15 BRD Rules — Detailed Reference](#4-all-15-brd-rules--detailed-reference)
-   - [SOPHIS Rules (P1–P3)](#sophis-rules-p1p3)
-   - [OTC Rules (P4–P13)](#otc-rules-p4p13)
-   - [ETD Rules (P14–P15)](#etd-rules-p14p15)
-5. [Greedy Strategies — Detailed Reference](#5-greedy-strategies--detailed-reference)
-6. [End-to-End Data Flow Diagram](#6-end-to-end-data-flow-diagram)
-7. [Key Efficiency Decisions — Summary Table](#7-key-efficiency-decisions--summary-table)
+- [Derivatives Matching Engine — PySpark Notebook Technical Guide](#derivatives-matching-engine--pyspark-notebook-technical-guide)
+  - [Table of Contents](#table-of-contents)
+  - [1. Overview \& Architecture](#1-overview--architecture)
+    - [Two Layers](#two-layers)
+    - [Core Architectural Principle: Candidates → Score → Resolve](#core-architectural-principle-candidates--score--resolve)
+  - [2. Why Not Just "Port the Pandas Notebook"?](#2-why-not-just-port-the-pandas-notebook)
+    - [Problem 1 — Repeated wide shuffles](#problem-1--repeated-wide-shuffles)
+    - [Problem 2 — 13 anti-joins to mutate pools](#problem-2--13-anti-joins-to-mutate-pools)
+    - [Problem 3 — 100+ column shuffle payload](#problem-3--100-column-shuffle-payload)
+    - [Problem 4 — Skew and many-to-many explosions](#problem-4--skew-and-many-to-many-explosions)
+  - [3. Section-by-Section Walkthrough](#3-section-by-section-walkthrough)
+    - [Section 1 — Spark Session \& Configuration](#section-1--spark-session--configuration)
+    - [Section 2 — BRD Constants \& System Classifications](#section-2--brd-constants--system-classifications)
+    - [Section 3 — Matching Rule Definitions](#section-3--matching-rule-definitions)
+    - [Section 4 — Load Data (Bronze Layer)](#section-4--load-data-bronze-layer)
+    - [Section 5 — Scope Exclusion](#section-5--scope-exclusion)
+    - [Section 6 — Silver Layer Derivations](#section-6--silver-layer-derivations)
+      - [DerivedSophisId](#derivedsophisid)
+      - [DerivedDelta1Id](#deriveddelta1id)
+      - [ReconSubProduct](#reconsubproduct)
+      - [Why no Python UDFs?](#why-no-python-udfs)
+    - [Section 7 — Core / Wide Split](#section-7--core--wide-split)
+    - [Section 8 — Candidate Generation Function](#section-8--candidate-generation-function)
+    - [Section 9 — Generate All BRD Candidates](#section-9--generate-all-brd-candidates)
+    - [Section 10 — 1-to-1 Resolution via Window Ranking](#section-10--1-to-1-resolution-via-window-ranking)
+    - [Section 11 — Compute Unmatched Pools for Greedy](#section-11--compute-unmatched-pools-for-greedy)
+    - [Section 12 — Greedy Strategy 1: Amount + Counterparty (1%)](#section-12--greedy-strategy-1-amount--counterparty-1)
+    - [Section 13 — Greedy Strategy 2: Amount Only (0.1%)](#section-13--greedy-strategy-2-amount-only-01)
+    - [Section 14 — Greedy Layer Summary](#section-14--greedy-layer-summary)
+    - [Section 15 — Final Consolidation](#section-15--final-consolidation)
+    - [Section 15b — Save Base Matches (Before Enrichment)](#section-15b--save-base-matches-before-enrichment)
+    - [Section 16 — Enrichment: Join Back Wide Columns](#section-16--enrichment-join-back-wide-columns)
+    - [Section 17 — Matches by System Breakdown](#section-17--matches-by-system-breakdown)
+    - [Section 18 — Remaining Unmatched by System](#section-18--remaining-unmatched-by-system)
+    - [Section 18b — Data Quality Validation](#section-18b--data-quality-validation)
+    - [Section 18c — Explainability: Unmatched Reason Breakdown](#section-18c--explainability-unmatched-reason-breakdown)
+    - [Section 19 — Save Results](#section-19--save-results)
+    - [Section 20 — Summary Report](#section-20--summary-report)
+    - [Section 21 — Cleanup](#section-21--cleanup)
+  - [4. All 15 BRD Rules — Detailed Reference](#4-all-15-brd-rules--detailed-reference)
+    - [Rule Execution Model](#rule-execution-model)
+    - [SOPHIS Rules (P1–P3)](#sophis-rules-p1p3)
+      - [Priority 1 — SOPHIS #1: `DerivedSophisId ↔ fissnumber`](#priority-1--sophis-1-derivedsophisid--fissnumber)
+      - [Priority 2 — SOPHIS #2: `DerivedSophisId + BookId ↔ fissnumber + tradingsystembook`](#priority-2--sophis-2-derivedsophisid--bookid--fissnumber--tradingsystembook)
+      - [Priority 3 — SOPHIS #3: `DerivedSophisId ↔ tradeid`](#priority-3--sophis-3-derivedsophisid--tradeid)
+    - [OTC Rules (P4–P13)](#otc-rules-p4p13)
+      - [Priority 4 — OTC #1: `SourceSystemTradeId ↔ tradeid`](#priority-4--otc-1-sourcesystemtradeid--tradeid)
+      - [Priority 5 — OTC #2: `SourceSystemTradeId + DerivedMasterbookId ↔ tradeid + masterbookid`](#priority-5--otc-2-sourcesystemtradeid--derivedmasterbookid--tradeid--masterbookid)
+      - [Priority 6 — OTC #3: `SourceSystemTradeId ↔ alternatetradeid1`](#priority-6--otc-3-sourcesystemtradeid--alternatetradeid1)
+      - [Priority 7 — OTC #4: `SourceSystemTradeId + DerivedMasterbookId ↔ alternatetradeid1 + masterbookid`](#priority-7--otc-4-sourcesystemtradeid--derivedmasterbookid--alternatetradeid1--masterbookid)
+      - [Priority 8 — OTC #5: `DerivedSophisId ↔ fissnumber`](#priority-8--otc-5-derivedsophisid--fissnumber)
+      - [Priority 9 — OTC #6: `DerivedSophisId + BookId ↔ fissnumber + tradingsystembook`](#priority-9--otc-6-derivedsophisid--bookid--fissnumber--tradingsystembook)
+      - [Priority 10 — OTC #7: `DerivedSophisId ↔ tradeid`](#priority-10--otc-7-derivedsophisid--tradeid)
+      - [Priority 11 — OTC #8: `DerivedDelta1Id ↔ tradeid`](#priority-11--otc-8-deriveddelta1id--tradeid)
+      - [Priority 12 — OTC #9: `SourceSystemTradeId ↔ alternatetradeid2`](#priority-12--otc-9-sourcesystemtradeid--alternatetradeid2)
+      - [Priority 13 — OTC #10: `SourceSystemTradeId + DerivedMasterbookId ↔ alternatetradeid2 + masterbookid`](#priority-13--otc-10-sourcesystemtradeid--derivedmasterbookid--alternatetradeid2--masterbookid)
+    - [ETD Rules (P14–P15)](#etd-rules-p14p15)
+      - [Priority 14 — ETD #1: `SourceSystemInstrumentId + DerivedMasterbookId ↔ instrumentid + masterbookid`](#priority-14--etd-1-sourcesysteminstrumentid--derivedmasterbookid--instrumentid--masterbookid)
+      - [Priority 15 — ETD #2: `SourceSystemInstrumentId ↔ instrumentid`](#priority-15--etd-2-sourcesysteminstrumentid--instrumentid)
+  - [5. Greedy Strategies — Detailed Reference](#5-greedy-strategies--detailed-reference)
+    - [Strategy 1 — Amount + Counterparty (1% tolerance)](#strategy-1--amount--counterparty-1-tolerance)
+    - [Strategy 2 — Amount Only (0.1% strict tolerance)](#strategy-2--amount-only-01-strict-tolerance)
+  - [6. End-to-End Data Flow Diagram](#6-end-to-end-data-flow-diagram)
+  - [7. Key Efficiency Decisions — Summary Table](#7-key-efficiency-decisions--summary-table)
 
 ---
 
@@ -134,22 +166,39 @@ Keys like `DerivedSophisId` or `fissnumber` may not be globally unique. A single
 ### Section 1 — Spark Session & Configuration
 
 ```python
+# AQE
 spark.conf.set("spark.sql.adaptive.enabled", "true")
 spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
 spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
+spark.conf.set("spark.sql.adaptive.localShuffleReader.enabled", "true")
+
+# Cluster-tuned for 122 GB / 16 cores / 2-10 workers (DBR 16.4 LTS)
+spark.conf.set("spark.sql.shuffle.partitions", "320")
+spark.conf.set("spark.sql.autoBroadcastJoinThreshold", str(256 * 1024 * 1024))
+spark.conf.set("spark.sql.adaptive.advisoryPartitionSizeInBytes", "128m")
+
+# Delta Lake write optimisation
+spark.conf.set("spark.databricks.delta.optimizeWrite.enabled", "true")
+spark.conf.set("spark.databricks.delta.autoCompact.enabled", "true")
 ```
 
-**What it does:** Configures the SparkSession with three critical flags from Spark's **Adaptive Query Execution (AQE)** framework.
+**What it does:** Configures the SparkSession for the specific cluster profile: 122 GB RAM, 16 cores per node, 2–10 autoscaling workers on Databricks Runtime 16.4 LTS.
 
-**Why it's efficient:**
+**Why each setting:**
 
-| Flag | Effect |
-|---|---|
-| `adaptive.enabled` | AQE rewrites the physical plan at runtime using actual partition statistics. It can change join strategies (e.g., switch a sort-merge join to a broadcast join) after seeing real data sizes. |
-| `coalescePartitions.enabled` | After a shuffle, AQE merges small output partitions automatically. This avoids the classic "too many tiny tasks" slowdown that plagues uniformly-partitioned jobs. |
-| `skewJoin.enabled` | When one partition is much larger than others (hot key), AQE splits it and replicates the smaller side. This prevents one task from running for hours while the rest finish in seconds. |
+| Setting | Value | Rationale |
+|---|---|---|
+| `adaptive.enabled` | `true` | AQE rewrites the physical plan at runtime using actual partition statistics — can switch a sort-merge join to a broadcast join after seeing real data sizes. |
+| `coalescePartitions.enabled` | `true` | After a shuffle, AQE merges small output partitions automatically. Avoids the "too many tiny tasks" slowdown. |
+| `skewJoin.enabled` | `true` | When one partition is much larger than others (hot key), AQE splits it and replicates the smaller side. Prevents one task from running for hours. |
+| `localShuffleReader.enabled` | `true` | On DBR 16.4 LTS, allows tasks to read shuffle data locally rather than over the network when the data is already on the same node. |
+| `shuffle.partitions` | `320` | ~2× total cores at max workers (10 workers × 16 cores = 160 cores → 320 partitions). AQE will coalesce down if partitions are empty. Too few partitions cause large tasks that can't parallelise; too many cause scheduling overhead. |
+| `autoBroadcastJoinThreshold` | `256 MB` | Axis core (~4M × 11 cols) may fit within 256 MB, allowing Spark to auto-broadcast the smaller side of BRD candidate joins and avoid a shuffle entirely on one side. |
+| `advisoryPartitionSizeInBytes` | `128 MB` | Target partition size during adaptive coalescing — keeps tasks evenly sized and avoids spill on 122 GB nodes. |
+| `delta.optimizeWrite` | `true` | Databricks-specific: automatically right-sizes output files during Delta writes, avoiding the small-file problem without needing explicit `OPTIMIZE` commands. |
+| `delta.autoCompact` | `true` | Automatically compacts small files after each write transaction, keeping Delta tables performant for subsequent reads. |
 
-**On Databricks** these are enabled by default, but making them explicit ensures they survive any cluster configuration overrides and makes the intent visible to future maintainers.
+**On Databricks** AQE flags are enabled by default, but making them explicit ensures they survive any cluster configuration overrides and makes the intent visible to future maintainers.
 
 ---
 
@@ -219,6 +268,8 @@ df_axis_full = df_axis_full
 ```
 
 **What it does:** Reads raw CSV files (or Delta tables in production) and immediately stamps each row with three metadata columns.
+
+> ⚡ **Performance note:** No `.count()` calls at ingestion time. All row counts are deferred to Section 7 where the core tables are cached — resolving the counts as a free side-effect of the cache materialisation rather than triggering 3 separate full-table scan jobs.
 
 **Why Bronze metadata matters:**  
 In a production Delta Lake architecture the Bronze layer is **append-only** — you never overwrite raw data. The three metadata columns serve different purposes:
@@ -303,7 +354,17 @@ A Spark shuffle moves data proportional to the **size of each row × number of r
 
 The wide tables are never touched during matching. They are joined back exactly once, at the end (Section 16), on the already-small matched set.
 
-**Core tables are cached** because they are reused across all 15 BRD rules. Without caching, Spark would re-read and re-derive them from scratch for each rule.
+**`MEMORY_AND_DISK` instead of `.cache()`:**
+
+```python
+axis_core = axis_core.persist(StorageLevel.MEMORY_AND_DISK)
+fin_core  = fin_core.persist(StorageLevel.MEMORY_AND_DISK)
+```
+
+`.cache()` is shorthand for `MEMORY_ONLY` — if a partition doesn't fit in the executor's memory budget it is silently dropped and recomputed. At 4M rows on a busy cluster this can cause repeated recomputation. `MEMORY_AND_DISK` spills overflow partitions to local executor disk rather than dropping them, making the cache truly durable at scale. The trade-off (slower spill reads vs. recomputation) is almost always favourable at this data volume.
+
+**Single-point count resolution:**  
+This is the one section where `.count()` is called intentionally — it both materialises the persisted DataFrames and captures the row counts. All counts deferred from Sections 4 and 5 are resolved here in **two Spark jobs** rather than the original five+.
 
 ---
 
@@ -324,6 +385,21 @@ def build_candidates_for_rule(axis_df, fin_df, rule):
 **What it does:** A single reusable function that generates candidate match pairs for any of the 15 BRD rules.
 
 **Step-by-step reasoning:**
+
+**Step 2 — Skip if DerivedMasterbookId required but empty:**  
+Rather than calling `.limit(1).count()` inside the function (which would trigger a **Spark job per rule** — up to 5 extra jobs for the 5 `requires_derived_masterbook=True` rules), the notebook pre-computes a single boolean flag `HAS_DERIVED_MASTERBOOK` once before the rule loop:
+
+```python
+HAS_DERIVED_MASTERBOOK = (
+    axis_core.filter((F.col("DerivedMasterbookId") != "")).limit(1).count() > 0
+)
+```
+
+This single job result is then read inside `build_candidates_for_rule` with no Spark operation:
+```python
+if rule["requires_derived_masterbook"] and not HAS_DERIVED_MASTERBOOK:
+    return spark.createDataFrame([], _EMPTY_CANDIDATE_SCHEMA)
+```
 
 **Step 3 — Project to narrow schema:**  
 Before the join, each side is projected to only the columns needed for that specific rule: `axis_id`, the amount column, and the join key(s). This ensures the join shuffle carries the minimum possible payload.
@@ -355,10 +431,12 @@ for rule in MATCHING_RULES:
     candidate_dfs.append(cand)
 
 candidates_layer1 = reduce(DataFrame.unionByName, candidate_dfs)
-candidates_layer1 = candidates_layer1.cache()
+candidates_layer1 = candidates_layer1.persist(StorageLevel.MEMORY_AND_DISK)
 ```
 
 **What it does:** Calls `build_candidates_for_rule` 15 times, then unions all resulting DataFrames into a single **candidate edges table**.
+
+> ⚡ **Performance note:** No `.count()` after the union. The union is lazy — no Spark job is triggered. The `persist()` registers the plan for caching, but materialisation only happens when `resolve_one_to_one` reads the candidates in the next section. This collapses what was previously two separate Spark jobs (count + resolution) into one.
 
 **Why `unionByName` instead of `union`:**  
 `union` matches columns by position — a brittle approach if any rule ever returns columns in a different order. `unionByName` matches by column name, making the union resilient to future column reordering.
@@ -520,6 +598,8 @@ final_unmatched_fin  = fin_core.join( all_matches.select("fin_id"),  "fin_id",  
 
 **What it does:** Unions all three match DataFrames into `all_matches`, then computes final unmatched sets.
 
+> ⚡ **Performance note:** `total_matched` is derived arithmetically from `brd_match_count + greedy1_count + greedy2_count` — already computed in prior sections. Similarly, `unmatched_axis_count = ORIGINAL_AXIS_COUNT - total_matched`. Neither requires a new Spark job. Only `unmatched_fin_count` requires a scan (deferred to the save step). This eliminates three `.count()` calls that were previously triggered here.
+
 **Why the schema is guaranteed consistent:**  
 All three DataFrames were produced with the **same column list** in the same order:
 `axis_id, fin_id, priority, category, brd_priority, description, amount_diff, amount_rel_diff, key_strength, MatchLayer, run_id, batch_id, rule_version, match_timestamp`
@@ -528,6 +608,32 @@ All three DataFrames were produced with the **same column list** in the same ord
 
 **Why `all_matches` is cached:**  
 It is consumed by the enrichment join (Section 16), the system breakdown (Section 17), and the DQ validation (Section 18b). Caching avoids three independent re-executions of the full matching pipeline.
+
+---
+
+### Section 15b — Save Base Matches (Before Enrichment)
+
+```python
+all_matches.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/matched_all_base")
+brd_matches.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/matched_brd_layer")
+greedy_all_df.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/matched_greedy_layer")
+final_unmatched_axis.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/unmatched_axis_base")
+final_unmatched_fin.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/unmatched_finstore_base")
+```
+
+**What it does:** Saves all match results with the **narrow core schema** (~15 columns) to Delta **before** the expensive wide enrichment join.
+
+**Why save twice (base + enriched)?**
+
+| Table | Columns | Use case |
+|---|---|---|
+| `matched_all_base` | ~15 | Fast query on match metadata: "how many GCD-NEWYORK trades matched at BRD P4?" — runs in seconds |
+| `matched_all_enriched` | 100+ | Full reporting, variance analysis, downstream consumption |
+| `unmatched_axis_base` | ~11 | Quick triage of unmatched trades without loading 100+ cols per row |
+
+The base tables are available immediately, even before the enrichment join completes. In practice on a large cluster the enrichment join (two shuffles across wide schemas) can take 10–20 minutes — during which the base results are already queryable.
+
+**Column count advantage:** A narrow Delta table of 4M rows at ~15 columns is approximately 200–400 MB on disk. The same 4M rows at 100+ columns is 2–4 GB. Downstream analytical queries on the base table skip reading the wide columns entirely, reducing I/O by ~10×.
 
 ---
 
@@ -547,6 +653,8 @@ matches_enriched = all_matches
 
 **Why this is the only wide join in the notebook:**  
 Every join before this point operated on ~10–15 column core schemas. This is intentional — all the expensive shuffle operations (15 BRD joins, 2 greedy joins) involve narrow rows. This single enrichment join involves wide rows, but it operates on `all_matches` which is already a small fraction of the original input (typically 80–95% of Axis rows, but now in a single known-small DataFrame). Even at wide schema, one join on a small set is far cheaper than 15 joins on the full set.
+
+> ⚡ **Performance note:** No `.count()` on the enriched DataFrames. They are written directly to Delta in Section 19. The write action itself materialises the DataFrame — calling `.count()` first would cause a double scan of the 100+ column wide tables. Row counts use values already computed from the narrow base tables.
 
 **Column namespacing:**  
 All Axis wide columns are suffixed `_Axis`, all Finstore wide columns `_Finstore`. This prevents collisions when the two wide schemas have overlapping column names (e.g., both have `TradeDate`, `Currency`, `CounterpartyId`).
@@ -570,15 +678,20 @@ Groups `final_unmatched_axis` by `SourceSystemName`. Equivalent diagnostic to Se
 ### Section 18b — Data Quality Validation
 
 ```python
-def validate_dataframe(df, name, checks):
-    rows = []
-    for desc, expr in checks:
-        cnt = df.filter(expr).count()
-        rows.append((name, desc, cnt))
+def validate_dataframe_fast(df, name, checks):
+    """Run all checks in a single aggregation pass — 1 Spark job per DataFrame."""
+    agg_exprs = [
+        F.sum(F.when(expr, 1).otherwise(0)).alias(desc)
+        for desc, expr in checks
+    ]
+    result_row = df.agg(*agg_exprs).collect()[0]
+    rows = [(name, desc, int(result_row[desc])) for desc, _ in checks]
     return spark.createDataFrame(rows, ["dataset", "check", "violation_count"])
 ```
 
 **What it does:** Runs a configurable list of null/range checks against the core input DataFrames and the `all_matches` output, then prints a violation summary.
+
+> ⚡ **Performance note (v4.1):** The original implementation called `.filter(expr).count()` individually for each check — **14 separate Spark jobs**. The new `validate_dataframe_fast` replaces this with a single `df.agg(F.sum(F.when(...)), ...)` per DataFrame — **3 Spark jobs total** (one per dataset). On 4M + 20M + matched rows this saves ~11 full-table scans.
 
 **Checks applied:**
 
@@ -624,12 +737,26 @@ The two categories require completely different remediation actions. `no_candida
 ### Section 19 — Save Results
 
 ```python
-brd_matches.write.format("delta").mode("overwrite").save(...)
-matches_enriched.write.format("delta").mode("overwrite").save(...)
-unmatched_axis_enriched.write.format("delta").mode("overwrite").save(...)
+# Wide (enriched) outputs — saved here
+matches_enriched.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/matched_all_enriched")
+unmatched_axis_enriched.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/unmatched_axis_enriched")
+unmatched_fin_enriched.write.format("delta").mode("overwrite").save(f"{OUTPUT_DIR}/unmatched_finstore_enriched")
 ```
 
-**What it does:** Persists all output DataFrames as Delta tables.
+**What it does:** Saves the wide-schema (enriched) outputs. The narrow base outputs were already saved in Section 15b.
+
+**Complete output table inventory:**
+
+| Table | Schema | Section saved | Primary use |
+|---|---|---|---|
+| `matched_all_base` | Narrow (~15 cols) | 15b | Fast match analytics |
+| `matched_brd_layer` | Narrow | 15b | BRD-only match review |
+| `matched_greedy_layer` | Narrow | 15b | Greedy-only match review |
+| `unmatched_axis_base` | Narrow (~11 cols) | 15b | Fast unmatched triage |
+| `unmatched_finstore_base` | Narrow (~10 cols) | 15b | Fast unmatched triage |
+| `matched_all_enriched` | Wide (100+ cols) | 19 | Full reporting, variance |
+| `unmatched_axis_enriched` | Wide | 19 | Investigation with full trade detail |
+| `unmatched_finstore_enriched` | Wide | 19 | Investigation with full trade detail |
 
 **Why Delta over Parquet or CSV:**
 
@@ -653,7 +780,9 @@ ZORDER co-locates rows with similar values on disk. If downstream queries freque
 
 ### Section 20 — Summary Report
 
-Generates a human-readable text report including run metadata (`run_id`, `batch_id`, `rule_version`), match counts at every layer, performance notes, and DQ status. Saved as a text file alongside the Delta outputs for archival.
+Generates a human-readable text report including run metadata (`run_id`, `batch_id`, `rule_version`), match counts at every layer, performance notes, and DQ status.
+
+> ⚡ **Performance note (v4.1):** The original implementation used `spark.sparkContext.parallelize([report]).saveAsTextFile(...)` — this triggered a Spark job just to write a single string. Replaced with `dbutils.fs.put(...)` on Databricks (a simple driver-side API call, no Spark job) with a Python `open()` fallback for local execution.
 
 ---
 
@@ -971,16 +1100,23 @@ CSV Files (axis_sample_poc.csv, finstore_sample_poc.csv)
 
 ## 7. Key Efficiency Decisions — Summary Table
 
-| Decision | Pandas Notebook | PySpark Notebook | Efficiency Gain |
+| Decision | Pandas Notebook | PySpark Notebook (v4.1) | Efficiency Gain |
 |---|---|---|---|
 | **Rule execution** | 15 sequential join + anti-join cycles | 15 candidate edge generations → single union → single window rank | Eliminates 14 anti-join shuffles |
 | **Column payload** | Full 100+ col schema throughout | Core schema (~11 cols) for all matching; wide join only at end | ~10–17× reduction in shuffle I/O |
 | **SOPHIS ID extraction** | Python `str.split()` UDF per row | `F.split() + F.element_at()` native Spark SQL | JVM-native execution; no Python serialisation |
 | **Greedy blocking** | `groupby + iterrows` loops | Equi-join on `cpty_str` (Strategy 1) / bucket expansion (Strategy 2) | Scales from O(n²) to O(n × candidates_per_key) |
 | **1-to-1 enforcement** | Pool mutation (remove matched sets) | 3-pass window ranking | Single shuffle; fully deterministic |
-| **Skew handling** | N/A (single-machine) | AQE `skewJoin.enabled` + bucket ±1 expansion | Prevents single-task bottlenecks on hot keys |
-| **Caching strategy** | Pandas DataFrames always in memory | Explicit `.cache()` only on reused DataFrames (core tables, candidates) | Avoids unnecessary memory pressure on wide tables |
+| **Skew handling** | N/A (single-machine) | AQE `skewJoin.enabled` + `localShuffleReader` + bucket ±1 expansion | Prevents single-task bottlenecks on hot keys |
+| **Shuffle partitions** | N/A | 320 (tuned for 160 cores at max scale) | Right-sized parallelism; AQE coalesces empty partitions |
+| **Broadcast threshold** | N/A | 256 MB | Auto-broadcasts small join sides; eliminates sort-merge join shuffle |
+| **`.count()` calls** | N/A | ~6 essential counts (was ~20+); arithmetic derivation elsewhere | Eliminates ~14 full-table scan jobs |
+| **DerivedMasterbookId check** | N/A | 1 pre-computed flag (was 5 per-rule `.limit(1).count()`) | Saves 4 Spark jobs before the rule loop |
+| **DQ validation** | None | Single-pass `F.sum(F.when(...))` per DataFrame (3 jobs, was 14) | Saves 11 Spark jobs |
+| **Cache storage level** | N/A | `MEMORY_AND_DISK` (spill-safe) | No silent cache eviction at 4M+ rows |
+| **Base data save** | None | Narrow Delta tables saved in Section 15b before enrichment | Results available 10–20 min earlier; fast downstream queries |
+| **Report save** | `sparkContext.parallelize().saveAsTextFile()` | `dbutils.fs.put()` driver-side call | Eliminates 1 unnecessary Spark job |
+| **Delta write quality** | N/A | `optimizeWrite` + `autoCompact` enabled | No small-file problem; tables stay performant without manual OPTIMIZE |
 | **Output format** | CSV | Delta Lake (ACID, time-travel, ZORDER) | Queryable, rollback-capable, schema-enforced |
 | **Auditability** | No lineage columns | `run_id`, `batch_id`, `rule_version`, `match_timestamp` on every row | Full run traceability for regulatory audit |
-| **Data quality** | None | `validate_dataframe()` null/range checks post-match | Catches data contract violations before Gold promotion |
 | **Explainability** | None | `unmatched_reason` classification on every unmatched trade | Enables targeted remediation vs. broad investigation |
