@@ -84,34 +84,31 @@ $PlainPwd  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
 
 # =============================================================================
 # 4. BUILD THE JAVASCRIPT THAT mongosh WILL EXECUTE
-#    For each collection we:
-#      a) countDocuments()
-#      b) stats() for storage size
-#      c) Aggregate a $sample to discover all unique field names
-#      d) Print one sample document
 # =============================================================================
 $CollectionListJS = ($DunsCollections | ForEach-Object { "`"$_`"" }) -join ", "
 
-$JsScript = @"
+# Use a single-quoted here-string (@'...'@) so PowerShell does NOT expand
+# any $ variables inside — the JS engine handles them at runtime instead.
+# The only values we need from PowerShell ($Database, $Environment, $SampleSize)
+# are injected via string concatenation before the literal JS block.
+$JsHeader = @"
 const db = db.getSiblingDB("$Database");
 const collections = [$CollectionListJS];
 const sampleSize  = $SampleSize;
+const environment = "$Environment";
+"@
 
+$JsBody = @'
 print("==============================================================================");
-print(" DUNS ID Collection Preview");
-print(" Environment : $Environment");
-print(" Database    : $Database");
-print(" Collections : " + collections.length);
+print(" DUNS ID Collection Preview  |  Environment: " + environment);
 print("==============================================================================");
 print("");
 
 collections.forEach(function(colName, idx) {
     const col = db.getCollection(colName);
 
-    // --- Row count ---
     const count = col.estimatedDocumentCount();
 
-    // --- Storage stats ---
     let sizeStr = "N/A";
     try {
         const st = col.stats();
@@ -121,22 +118,20 @@ collections.forEach(function(colName, idx) {
         sizeStr = "stats() unavailable";
     }
 
-    // --- Field names from a sample ---
     const keySet = {};
-    col.aggregate([{ `$sample: { size: sampleSize } }]).forEach(function(doc) {
+    col.aggregate([{ $sample: { size: sampleSize } }]).forEach(function(doc) {
         Object.keys(doc).forEach(function(k) { keySet[k] = 1; });
     });
     const fields = Object.keys(keySet).sort();
 
-    // --- One sample document ---
     const sample = col.findOne();
 
     print("----------------------------------------------------------------------");
     print("[" + (idx+1) + "/" + collections.length + "]  " + colName);
     print("----------------------------------------------------------------------");
-    print("  Documents  : " + count);
-    print("  Storage    : " + sizeStr);
-    print("  Fields (" + fields.length + ") : " + fields.join(", "));
+    print("  Documents : " + count);
+    print("  Storage   : " + sizeStr);
+    print("  Fields (" + fields.length + "): " + fields.join(", "));
     print("");
     print("  Sample document:");
     printjson(sample);
@@ -146,16 +141,21 @@ collections.forEach(function(colName, idx) {
 print("==============================================================================");
 print(" Preview complete.");
 print("==============================================================================");
-"@
+'@
+
+$JsScript = $JsHeader + "`n" + $JsBody
 
 # =============================================================================
-# 5. RUN mongosh WITH --eval
+# 5. WRITE JS TO A TEMP FILE AND RUN mongosh --file
+#    Using --file is more reliable than --eval for multi-line scripts.
 # =============================================================================
+$TempJs = Join-Path $env:TEMP "duns_preview_$PID.js"
+$JsScript | Out-File -FilePath $TempJs -Encoding utf8 -NoNewline
+
 Write-Host ""
 Write-Host "Connecting to $Environment ($Database) via mongosh ..." -ForegroundColor Cyan
 Write-Host ""
 
-# URI must come first (positional), then flags — matches the original working command
 $MongoshArgs = @(
     $MongoshUri,
     "--username",                $DunsUsername,
@@ -164,13 +164,17 @@ $MongoshArgs = @(
     "--authenticationDatabase",  '$external',
     "--tlsCAFile",               $DunsSslCAFile,
     "--quiet",
-    "--eval",                    $JsScript
+    "--file",                    $TempJs
 )
 
 & $DunsMongoshPath @MongoshArgs
+$ExitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "mongosh exited with code $LASTEXITCODE"
+# Clean up temp file
+Remove-Item $TempJs -Force -ErrorAction SilentlyContinue
+
+if ($ExitCode -ne 0) {
+    Write-Error "mongosh exited with code $ExitCode"
     $PlainPwd = $null; [System.GC]::Collect()
     exit 1
 }
