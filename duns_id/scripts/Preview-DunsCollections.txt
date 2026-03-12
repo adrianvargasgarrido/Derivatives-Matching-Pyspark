@@ -143,14 +143,15 @@ print(" Preview complete.");
 print("==============================================================================");
 '@
 
-$JsScript = $JsHeader + "`n" + $JsBody
+$JsScript = $JsHeader + [System.Environment]::NewLine + $JsBody
 
 # =============================================================================
 # 5. WRITE JS TO A TEMP FILE AND RUN mongosh --file
 #    Using --file is more reliable than --eval for multi-line scripts.
+#    WriteAllText produces UTF-8 WITHOUT BOM — mongosh requires no BOM.
 # =============================================================================
-$TempJs = Join-Path $env:TEMP "duns_preview_$PID.js"
-$JsScript | Out-File -FilePath $TempJs -Encoding utf8 -NoNewline
+$TempJs = Join-Path ([System.IO.Path]::GetTempPath()) "duns_preview_$PID.js"
+[System.IO.File]::WriteAllText($TempJs, $JsScript, (New-Object System.Text.UTF8Encoding $false))
 
 Write-Host ""
 Write-Host "Connecting to $Environment ($Database) via mongosh ..." -ForegroundColor Cyan
