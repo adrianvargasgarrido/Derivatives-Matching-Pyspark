@@ -1,0 +1,285 @@
+# =============================================================================
+# Preview-DunsCollections.ps1
+# -----------------------------------------------------------------------------
+# Connects to the DUNS MongoDB (DEV or TEST) via mongosh and, for each
+# collection in the shared config list, shows:
+#
+#   - Document count
+#   - Estimated storage size
+#   - All field names (keys) from a sample of documents
+#   - A sample document
+#
+# After displaying the stats you are prompted to choose which collections
+# to export. Selected collections are then downloaded via mongoexport
+# with filenames suffixed _DEV.json or _TEST.json.
+#
+# Usage:
+#   .\Preview-DunsCollections.ps1                     # DEV (default)
+#   .\Preview-DunsCollections.ps1 -Environment TEST   # TEST
+#   .\Preview-DunsCollections.ps1 -SkipExport          # Stats only, no download prompt
+# =============================================================================
+
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [ValidateSet("DEV", "TEST")]
+    [string]$Environment = "DEV",
+
+    # How many documents to sample for field discovery
+    [Parameter()]
+    [int]$SampleSize = 100,
+
+    # Skip the export prompt — just show stats
+    [Parameter()]
+    [switch]$SkipExport,
+
+    # Override output directory for exports
+    [Parameter()]
+    [string]$OutputDir = ""
+)
+
+# =============================================================================
+# 0. LOAD SHARED CONFIG
+# =============================================================================
+$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ConfigFile = Join-Path $ScriptDir "DunsConfig.ps1"
+
+if (-not (Test-Path $ConfigFile)) {
+    Write-Error "Shared config not found at: $ConfigFile"
+    exit 1
+}
+. $ConfigFile   # dot-source — brings in $DunsCollections, $DunsEnvConfig, etc.
+
+# =============================================================================
+# 1. RESOLVE PARAMETERS
+# =============================================================================
+$SelectedEnv = $DunsEnvConfig[$Environment]
+$Database    = $SelectedEnv.Database
+$MongoshUri  = $SelectedEnv.MongoshUri
+
+if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    $OutputDir = Join-Path $ScriptDir "..\data\reference"
+}
+$OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
+
+# =============================================================================
+# 2. PRE-FLIGHT CHECKS
+# =============================================================================
+if (-not (Test-Path $DunsMongoshPath)) {
+    Write-Error "mongosh.exe not found at: $DunsMongoshPath`nUpdate DunsConfig.ps1."
+    exit 1
+}
+if (-not (Test-Path $DunsSslCAFile)) {
+    Write-Error "SSL CA file not found at: $DunsSslCAFile`nUpdate DunsConfig.ps1."
+    exit 1
+}
+
+# =============================================================================
+# 3. PROMPT FOR PASSWORD
+# =============================================================================
+$SecurePwd = Read-Host -Prompt "Enter MongoDB password for '$DunsUsername'" -AsSecureString
+$PlainPwd  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePwd)
+)
+
+# =============================================================================
+# 4. BUILD THE JAVASCRIPT THAT mongosh WILL EXECUTE
+#    For each collection we:
+#      a) countDocuments()
+#      b) stats() for storage size
+#      c) Aggregate a $sample to discover all unique field names
+#      d) Print one sample document
+# =============================================================================
+$CollectionListJS = ($DunsCollections | ForEach-Object { "`"$_`"" }) -join ", "
+
+$JsScript = @"
+const db = db.getSiblingDB("$Database");
+const collections = [$CollectionListJS];
+const sampleSize  = $SampleSize;
+
+print("==============================================================================");
+print(" DUNS ID Collection Preview");
+print(" Environment : $Environment");
+print(" Database    : $Database");
+print(" Collections : " + collections.length);
+print("==============================================================================");
+print("");
+
+collections.forEach(function(colName, idx) {
+    const col = db.getCollection(colName);
+
+    // --- Row count ---
+    const count = col.estimatedDocumentCount();
+
+    // --- Storage stats ---
+    let sizeStr = "N/A";
+    try {
+        const st = col.stats();
+        const sizeMB = (st.size || 0) / (1024 * 1024);
+        sizeStr = sizeMB.toFixed(2) + " MB";
+    } catch(e) {
+        sizeStr = "stats() unavailable";
+    }
+
+    // --- Field names from a sample ---
+    const keySet = {};
+    col.aggregate([{ `$sample: { size: sampleSize } }]).forEach(function(doc) {
+        Object.keys(doc).forEach(function(k) { keySet[k] = 1; });
+    });
+    const fields = Object.keys(keySet).sort();
+
+    // --- One sample document ---
+    const sample = col.findOne();
+
+    print("----------------------------------------------------------------------");
+    print("[" + (idx+1) + "/" + collections.length + "]  " + colName);
+    print("----------------------------------------------------------------------");
+    print("  Documents  : " + count);
+    print("  Storage    : " + sizeStr);
+    print("  Fields (" + fields.length + ") : " + fields.join(", "));
+    print("");
+    print("  Sample document:");
+    printjson(sample);
+    print("");
+});
+
+print("==============================================================================");
+print(" Preview complete.");
+print("==============================================================================");
+"@
+
+# =============================================================================
+# 5. RUN mongosh WITH --eval
+# =============================================================================
+Write-Host ""
+Write-Host "Connecting to $Environment ($Database) via mongosh ..." -ForegroundColor Cyan
+Write-Host ""
+
+& $DunsMongoshPath `
+    --username $DunsUsername `
+    --password $PlainPwd `
+    --authenticationMechanism PLAIN `
+    --authenticationDatabase '$external' `
+    --tlsCAFile $DunsSslCAFile `
+    --quiet `
+    --eval $JsScript `
+    $MongoshUri
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "mongosh exited with code $LASTEXITCODE"
+    $PlainPwd = $null; [System.GC]::Collect()
+    exit 1
+}
+
+# =============================================================================
+# 6. INTERACTIVE EXPORT PROMPT
+# =============================================================================
+if ($SkipExport) {
+    Write-Host "`nSkipping export (use without -SkipExport to download)." -ForegroundColor Yellow
+    $PlainPwd = $null; [System.GC]::Collect()
+    exit 0
+}
+
+Write-Host ""
+Write-Host "Which collections would you like to download?" -ForegroundColor Yellow
+Write-Host ""
+
+for ($i = 0; $i -lt $DunsCollections.Count; $i++) {
+    Write-Host "  [$($i + 1)] $($DunsCollections[$i])"
+}
+Write-Host "  [A] All"
+Write-Host "  [N] None — exit"
+Write-Host ""
+
+$choice = Read-Host "Enter numbers separated by commas, or A / N"
+
+if ($choice -match "^[Nn]$") {
+    Write-Host "No exports requested. Exiting." -ForegroundColor Yellow
+    $PlainPwd = $null; [System.GC]::Collect()
+    exit 0
+}
+
+# Determine which collections to export
+if ($choice -match "^[Aa]$") {
+    $ToExport = $DunsCollections
+} else {
+    $indices  = $choice -split "," | ForEach-Object { ($_.Trim()) -as [int] }
+    $ToExport = @()
+    foreach ($idx in $indices) {
+        if ($idx -ge 1 -and $idx -le $DunsCollections.Count) {
+            $ToExport += $DunsCollections[$idx - 1]
+        } else {
+            Write-Warning "Ignoring invalid index: $idx"
+        }
+    }
+}
+
+if ($ToExport.Count -eq 0) {
+    Write-Host "No valid collections selected. Exiting." -ForegroundColor Yellow
+    $PlainPwd = $null; [System.GC]::Collect()
+    exit 0
+}
+
+# =============================================================================
+# 7. EXPORT SELECTED COLLECTIONS (via mongoexport)
+# =============================================================================
+if (-not (Test-Path $DunsMongoExportPath)) {
+    Write-Error "mongoexport.exe not found at: $DunsMongoExportPath`nUpdate DunsConfig.ps1."
+    $PlainPwd = $null; [System.GC]::Collect()
+    exit 1
+}
+
+if (-not (Test-Path $OutputDir)) {
+    New-Item -ItemType Directory -Path $OutputDir | Out-Null
+    Write-Host "Created output directory: $OutputDir"
+}
+
+$ExportUri = $SelectedEnv.ExportUri
+
+Write-Host ""
+Write-Host "=============================================="
+Write-Host " Exporting $($ToExport.Count) collection(s) ..."
+Write-Host "=============================================="
+Write-Host ""
+
+$Success = 0
+$Failed  = 0
+
+foreach ($Collection in $ToExport) {
+    $OutputFile = Join-Path $OutputDir "${Collection}_${Environment}.json"
+
+    Write-Host "[$($ToExport.IndexOf($Collection) + 1)/$($ToExport.Count)] $Collection -> $OutputFile"
+
+    & $DunsMongoExportPath `
+        --username              $DunsUsername `
+        --password              $PlainPwd `
+        --authenticationMechanism PLAIN `
+        --authenticationDatabase '$external' `
+        --uri                   $ExportUri `
+        --sslCAFile             $DunsSslCAFile `
+        --db                    $Database `
+        --collection            $Collection `
+        --out                   $OutputFile
+
+    if ($LASTEXITCODE -eq 0) {
+        $Size = (Get-Item $OutputFile).Length / 1MB
+        Write-Host "  OK  - $([math]::Round($Size, 2)) MB" -ForegroundColor Green
+        $Success++
+    } else {
+        Write-Host "  FAILED (exit code $LASTEXITCODE)" -ForegroundColor Red
+        $Failed++
+    }
+    Write-Host ""
+}
+
+# =============================================================================
+# 8. CLEANUP & SUMMARY
+# =============================================================================
+$PlainPwd = $null
+[System.GC]::Collect()
+
+Write-Host "=============================================="
+Write-Host " Done — Succeeded: $Success  |  Failed: $Failed"
+Write-Host "=============================================="
+
+if ($Failed -gt 0) { exit 1 }

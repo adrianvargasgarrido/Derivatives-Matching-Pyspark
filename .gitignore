@@ -1,13 +1,61 @@
 # Ignore everything by default
 *
 
-# Track only these files
+# ── Root files ────────────────────────────────────────────────
 !.gitignore
 !README.md
-!Derivatives_Matching_PySpark.ipynb
-!PySpark_Notebook_Technical_Guide.md
-!CHANGELOG_v4.7.md
-!CHANGELOG_v5.1.md
-!CHANGELOG_v5.4.md
-!CHANGELOG_v5.5.md
-!PySpark_Parallelization_Guide.md
+!best_practices.md
+
+# ── derivatives_matching/ ─────────────────────────────────────
+!derivatives_matching/
+derivatives_matching/*
+!derivatives_matching/*.ipynb
+!derivatives_matching/*.md
+!derivatives_matching/*.py
+!derivatives_matching/*.csv
+
+# ── duns_id/ ──────────────────────────────────────────────────
+!duns_id/
+duns_id/*
+
+# docs, notebooks, src, tests, scripts — track all files
+!duns_id/docs/
+duns_id/docs/*
+!duns_id/docs/**
+
+!duns_id/notebooks/
+duns_id/notebooks/*
+!duns_id/notebooks/**
+
+!duns_id/scripts/
+duns_id/scripts/*
+!duns_id/scripts/**
+
+!duns_id/src/
+duns_id/src/*
+!duns_id/src/**
+
+!duns_id/tests/
+duns_id/tests/*
+!duns_id/tests/**
+
+# data sub-folders — track structure (.gitkeep) but ignore data files
+!duns_id/data/
+duns_id/data/*
+!duns_id/data/input/
+!duns_id/data/output/
+!duns_id/data/reference/
+duns_id/data/input/*
+duns_id/data/output/*
+duns_id/data/reference/*
+!duns_id/data/input/.gitkeep
+!duns_id/data/output/.gitkeep
+!duns_id/data/reference/.gitkeep
+
+# review — track structure but ignore review files
+!duns_id/review/
+duns_id/review/*
+!duns_id/review/.gitkeep
+
+# root markdown files in duns_id
+!duns_id/*.md

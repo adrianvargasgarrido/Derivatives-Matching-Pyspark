@@ -1,0 +1,161 @@
+# =============================================================================
+# Export-DunsCollections.ps1
+# -----------------------------------------------------------------------------
+# Downloads one or more MongoDB collections from the DUNS ID database
+# (DEV or TEST environment) using mongoexport.
+#
+# All connection settings and the default collection list live in
+# DunsConfig.ps1 (single source of truth shared with Preview script).
+#
+# Output filenames are automatically suffixed with the environment:
+#   <CollectionName>_DEV.json   or   <CollectionName>_TEST.json
+#
+# Usage examples:
+#   # Export default collection list from DEV (prompts for password)
+#   .\Export-DunsCollections.ps1
+#
+#   # Export from TEST environment
+#   .\Export-DunsCollections.ps1 -Environment TEST
+#
+#   # Export specific collections only
+#   .\Export-DunsCollections.ps1 -Collections "BARC_CLNT_OWNRSHP_HRCHY_duns","BARC_ENTITY_MASTER"
+#
+#   # Override output directory
+#   .\Export-DunsCollections.ps1 -OutputDir "C:\Temp\duns_exports"
+# =============================================================================
+
+[CmdletBinding()]
+param(
+    # Target environment: DEV or TEST
+    [Parameter()]
+    [ValidateSet("DEV", "TEST")]
+    [string]$Environment = "DEV",
+
+    # List of collection names to export.
+    # Leave empty to use the default list from DunsConfig.ps1.
+    [Parameter()]
+    [string[]]$Collections = @(),
+
+    # Directory where JSON files will be saved.
+    # Defaults to duns_id/data/reference/ relative to this script.
+    [Parameter()]
+    [string]$OutputDir = ""
+)
+
+# =============================================================================
+# 0. LOAD SHARED CONFIG
+# =============================================================================
+$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ConfigFile = Join-Path $ScriptDir "DunsConfig.ps1"
+
+if (-not (Test-Path $ConfigFile)) {
+    Write-Error "Shared config not found at: $ConfigFile"
+    exit 1
+}
+. $ConfigFile   # dot-source — brings in $DunsCollections, $DunsEnvConfig, etc.
+
+# =============================================================================
+# 1. RESOLVE PARAMETERS
+# =============================================================================
+$SelectedEnv = $DunsEnvConfig[$Environment]
+$Database    = $SelectedEnv.Database
+$ExportUri   = $SelectedEnv.ExportUri
+
+if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    $OutputDir = Join-Path $ScriptDir "..\data\reference"
+}
+$OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
+
+# Use default collections from config if none were passed
+if ($Collections.Count -eq 0) {
+    $Collections = $DunsCollections
+}
+
+# =============================================================================
+# 2. PRE-FLIGHT CHECKS
+# =============================================================================
+if (-not (Test-Path $DunsMongoExportPath)) {
+    Write-Error "mongoexport.exe not found at: $DunsMongoExportPath`nUpdate DunsConfig.ps1."
+    exit 1
+}
+if (-not (Test-Path $DunsSslCAFile)) {
+    Write-Error "SSL CA file not found at: $DunsSslCAFile`nUpdate DunsConfig.ps1."
+    exit 1
+}
+
+# Create output directory if it does not exist
+if (-not (Test-Path $OutputDir)) {
+    New-Item -ItemType Directory -Path $OutputDir | Out-Null
+    Write-Host "Created output directory: $OutputDir"
+}
+
+# =============================================================================
+# 3. PROMPT FOR PASSWORD (secure — never stored in plain text at rest)
+# =============================================================================
+$SecurePwd = Read-Host -Prompt "Enter MongoDB password for '$DunsUsername'" -AsSecureString
+$PlainPwd  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePwd)
+)
+
+# =============================================================================
+# 4. EXPORT LOOP
+# =============================================================================
+Write-Host ""
+Write-Host "=============================================="
+Write-Host " DUNS ID MongoDB Export"
+Write-Host " Environment : $Environment"
+Write-Host " Database    : $Database"
+Write-Host " Collections : $($Collections.Count)"
+Write-Host " Output dir  : $OutputDir"
+Write-Host "=============================================="
+Write-Host ""
+
+$Success = 0
+$Failed  = 0
+
+foreach ($Collection in $Collections) {
+
+    # File name includes the environment suffix — DEV and TEST never overwrite each other
+    $OutputFile = Join-Path $OutputDir "${Collection}_${Environment}.json"
+
+    Write-Host "[$($Collections.IndexOf($Collection) + 1)/$($Collections.Count)] Exporting: $Collection -> $OutputFile"
+
+    & $DunsMongoExportPath `
+        --username              $DunsUsername `
+        --password              $PlainPwd `
+        --authenticationMechanism PLAIN `
+        --authenticationDatabase '$external' `
+        --uri                   $ExportUri `
+        --sslCAFile             $DunsSslCAFile `
+        --db                    $Database `
+        --collection            $Collection `
+        --out                   $OutputFile
+
+    if ($LASTEXITCODE -eq 0) {
+        $Size = (Get-Item $OutputFile).Length / 1MB
+        Write-Host "  OK  — $([math]::Round($Size, 2)) MB written" -ForegroundColor Green
+        $Success++
+    } else {
+        Write-Host "  FAILED (exit code $LASTEXITCODE)" -ForegroundColor Red
+        $Failed++
+    }
+
+    Write-Host ""
+}
+
+# =============================================================================
+# 5. WIPE PLAIN-TEXT PASSWORD FROM MEMORY
+# =============================================================================
+$PlainPwd = $null
+[System.GC]::Collect()
+
+# =============================================================================
+# 6. SUMMARY
+# =============================================================================
+Write-Host "=============================================="
+Write-Host " Export complete"
+Write-Host " Succeeded : $Success"
+Write-Host " Failed    : $Failed"
+Write-Host "=============================================="
+
+if ($Failed -gt 0) { exit 1 }
