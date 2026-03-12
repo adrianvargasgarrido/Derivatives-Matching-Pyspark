@@ -157,19 +157,24 @@ Write-Host ""
 Write-Host "Connecting to $Environment ($Database) via mongosh ..." -ForegroundColor Cyan
 Write-Host ""
 
-$MongoshArgs = @(
-    $MongoshUri,
-    "--username",                $DunsUsername,
-    "--password",                $PlainPwd,
-    "--authenticationMechanism", "PLAIN",
-    "--authenticationDatabase",  '$external',
-    "--tlsCAFile",               $DunsSslCAFile,
-    "--quiet",
-    "--file",                    $TempJs
-)
+# Build a single argument string — avoids all PowerShell splatting/quoting issues.
+# This matches the exact structure of the original working manual command.
+$MongoshArgString = @(
+    "--username"               , $DunsUsername
+    "--password"               , "`"$PlainPwd`""
+    "--authenticationMechanism", "PLAIN"
+    "--authenticationDatabase" , "`"`$external`""
+    "--tlsCAFile"              , "`"$DunsSslCAFile`""
+    "--quiet"
+    "--file"                   , "`"$TempJs`""
+    "`"$MongoshUri`""
+) -join " "
 
-& $DunsMongoshPath @MongoshArgs
-$ExitCode = $LASTEXITCODE
+$proc = Start-Process -FilePath $DunsMongoshPath `
+    -ArgumentList $MongoshArgString `
+    -NoNewWindow -Wait -PassThru
+
+$ExitCode = $proc.ExitCode
 
 # Clean up temp file
 Remove-Item $TempJs -Force -ErrorAction SilentlyContinue
@@ -259,20 +264,23 @@ foreach ($Collection in $ToExport) {
 
     Write-Host "[$($ToExport.IndexOf($Collection) + 1)/$($ToExport.Count)] $Collection -> $OutputFile"
 
-    $ExportArgs = @(
-        "--username",              $DunsUsername,
-        "--password",              $PlainPwd,
-        "--authenticationMechanism", "PLAIN",
-        "--authenticationDatabase", '$external',
-        "--uri",                   $ExportUri,
-        "--sslCAFile",             $DunsSslCAFile,
-        "--db",                    $Database,
-        "--collection",            $Collection,
-        "--out",                   $OutputFile
-    )
-    & $DunsMongoExportPath @ExportArgs
+    $ExportArgString = @(
+        "--username"               , $DunsUsername
+        "--password"               , "`"$PlainPwd`""
+        "--authenticationMechanism", "PLAIN"
+        "--authenticationDatabase" , "`"`$external`""
+        "--uri"                    , "`"$ExportUri`""
+        "--sslCAFile"              , "`"$DunsSslCAFile`""
+        "--db"                     , $Database
+        "--collection"             , $Collection
+        "--out"                    , "`"$OutputFile`""
+    ) -join " "
 
-    if ($LASTEXITCODE -eq 0) {
+    $expProc = Start-Process -FilePath $DunsMongoExportPath `
+        -ArgumentList $ExportArgString `
+        -NoNewWindow -Wait -PassThru
+
+    if ($expProc.ExitCode -eq 0) {
         $Size = (Get-Item $OutputFile).Length / 1MB
         Write-Host "  OK  - $([math]::Round($Size, 2)) MB" -ForegroundColor Green
         $Success++

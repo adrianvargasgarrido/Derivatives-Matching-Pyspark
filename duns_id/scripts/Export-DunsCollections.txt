@@ -120,20 +120,23 @@ foreach ($Collection in $Collections) {
 
     Write-Host "[$($Collections.IndexOf($Collection) + 1)/$($Collections.Count)] Exporting: $Collection -> $OutputFile"
 
-    $ExportArgs = @(
-        "--username",              $DunsUsername,
-        "--password",              $PlainPwd,
-        "--authenticationMechanism", "PLAIN",
-        "--authenticationDatabase", '$external',
-        "--uri",                   $ExportUri,
-        "--sslCAFile",             $DunsSslCAFile,
-        "--db",                    $Database,
-        "--collection",            $Collection,
-        "--out",                   $OutputFile
-    )
-    & $DunsMongoExportPath @ExportArgs
+    $ExportArgString = @(
+        "--username"               , $DunsUsername
+        "--password"               , "`"$PlainPwd`""
+        "--authenticationMechanism", "PLAIN"
+        "--authenticationDatabase" , "`"`$external`""
+        "--uri"                    , "`"$ExportUri`""
+        "--sslCAFile"              , "`"$DunsSslCAFile`""
+        "--db"                     , $Database
+        "--collection"             , $Collection
+        "--out"                    , "`"$OutputFile`""
+    ) -join " "
 
-    if ($LASTEXITCODE -eq 0) {
+    $expProc = Start-Process -FilePath $DunsMongoExportPath `
+        -ArgumentList $ExportArgString `
+        -NoNewWindow -Wait -PassThru
+
+    if ($expProc.ExitCode -eq 0) {
         $Size = (Get-Item $OutputFile).Length / 1MB
         Write-Host "  OK  — $([math]::Round($Size, 2)) MB written" -ForegroundColor Green
         $Success++
