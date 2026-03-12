@@ -27,7 +27,7 @@ duns_id/notebooks/*
 
 !duns_id/scripts/
 duns_id/scripts/*
-!duns_id/scripts/**
+!duns_id/scripts/*.txt
 
 !duns_id/src/
 duns_id/src/*
