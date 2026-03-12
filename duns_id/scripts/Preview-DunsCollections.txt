@@ -266,7 +266,8 @@ foreach ($Collection in $ToExport) {
         Write-Host "  OK  - $([math]::Round($Size, 2)) MB" -ForegroundColor Green
         $Success++
     } else {
-        Write-Host "  FAILED (exit code $LASTEXITCODE)" -ForegroundColor Red
+        $msg = "  FAILED (exit code " + $LASTEXITCODE + ")"
+        Write-Host $msg -ForegroundColor Red
         $Failed++
     }
     Write-Host ""
