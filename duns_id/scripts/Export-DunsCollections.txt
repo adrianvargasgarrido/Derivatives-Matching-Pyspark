@@ -120,16 +120,18 @@ foreach ($Collection in $Collections) {
 
     Write-Host "[$($Collections.IndexOf($Collection) + 1)/$($Collections.Count)] Exporting: $Collection -> $OutputFile"
 
-    & $DunsMongoExportPath `
-        --username              $DunsUsername `
-        --password              $PlainPwd `
-        --authenticationMechanism PLAIN `
-        --authenticationDatabase '$external' `
-        --uri                   $ExportUri `
-        --sslCAFile             $DunsSslCAFile `
-        --db                    $Database `
-        --collection            $Collection `
-        --out                   $OutputFile
+    $ExportArgs = @(
+        "--username",              $DunsUsername,
+        "--password",              $PlainPwd,
+        "--authenticationMechanism", "PLAIN",
+        "--authenticationDatabase", "`$external",
+        "--uri",                   $ExportUri,
+        "--sslCAFile",             $DunsSslCAFile,
+        "--db",                    $Database,
+        "--collection",            $Collection,
+        "--out",                   $OutputFile
+    )
+    & $DunsMongoExportPath @ExportArgs
 
     if ($LASTEXITCODE -eq 0) {
         $Size = (Get-Item $OutputFile).Length / 1MB

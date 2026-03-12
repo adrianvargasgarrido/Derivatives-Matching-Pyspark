@@ -155,15 +155,18 @@ Write-Host ""
 Write-Host "Connecting to $Environment ($Database) via mongosh ..." -ForegroundColor Cyan
 Write-Host ""
 
-& $DunsMongoshPath `
-    --username $DunsUsername `
-    --password $PlainPwd `
-    --authenticationMechanism PLAIN `
-    --authenticationDatabase '$external' `
-    --tlsCAFile $DunsSslCAFile `
-    --quiet `
-    --eval $JsScript `
+$MongoshArgs = @(
+    "--username", $DunsUsername,
+    "--password", $PlainPwd,
+    "--authenticationMechanism", "PLAIN",
+    "--authenticationDatabase", "`$external",
+    "--tlsCAFile", $DunsSslCAFile,
+    "--quiet",
+    "--eval", $JsScript,
     $MongoshUri
+)
+
+& $DunsMongoshPath @MongoshArgs
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "mongosh exited with code $LASTEXITCODE"
@@ -250,16 +253,18 @@ foreach ($Collection in $ToExport) {
 
     Write-Host "[$($ToExport.IndexOf($Collection) + 1)/$($ToExport.Count)] $Collection -> $OutputFile"
 
-    & $DunsMongoExportPath `
-        --username              $DunsUsername `
-        --password              $PlainPwd `
-        --authenticationMechanism PLAIN `
-        --authenticationDatabase '$external' `
-        --uri                   $ExportUri `
-        --sslCAFile             $DunsSslCAFile `
-        --db                    $Database `
-        --collection            $Collection `
-        --out                   $OutputFile
+    $ExportArgs = @(
+        "--username",              $DunsUsername,
+        "--password",              $PlainPwd,
+        "--authenticationMechanism", "PLAIN",
+        "--authenticationDatabase", "`$external",
+        "--uri",                   $ExportUri,
+        "--sslCAFile",             $DunsSslCAFile,
+        "--db",                    $Database,
+        "--collection",            $Collection,
+        "--out",                   $OutputFile
+    )
+    & $DunsMongoExportPath @ExportArgs
 
     if ($LASTEXITCODE -eq 0) {
         $Size = (Get-Item $OutputFile).Length / 1MB
