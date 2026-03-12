@@ -9,10 +9,8 @@
 # ── derivatives_matching/ ─────────────────────────────────────
 !derivatives_matching/
 derivatives_matching/*
-!derivatives_matching/*.ipynb
-!derivatives_matching/*.md
-!derivatives_matching/*.py
-!derivatives_matching/*.csv
+!derivatives_matching/Derivatives_Matching_PySpark.ipynb
+!derivatives_matching/CHANGELOG_v5.5.md
 
 # ── duns_id/ ──────────────────────────────────────────────────
 !duns_id/
