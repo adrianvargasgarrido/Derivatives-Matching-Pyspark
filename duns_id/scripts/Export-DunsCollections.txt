@@ -124,7 +124,7 @@ foreach ($Collection in $Collections) {
         "--username",              $DunsUsername,
         "--password",              $PlainPwd,
         "--authenticationMechanism", "PLAIN",
-        "--authenticationDatabase", "`$external",
+        "--authenticationDatabase", '$external',
         "--uri",                   $ExportUri,
         "--sslCAFile",             $DunsSslCAFile,
         "--db",                    $Database,

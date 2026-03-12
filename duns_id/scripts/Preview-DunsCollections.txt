@@ -155,15 +155,16 @@ Write-Host ""
 Write-Host "Connecting to $Environment ($Database) via mongosh ..." -ForegroundColor Cyan
 Write-Host ""
 
+# URI must come first (positional), then flags — matches the original working command
 $MongoshArgs = @(
-    "--username", $DunsUsername,
-    "--password", $PlainPwd,
+    $MongoshUri,
+    "--username",                $DunsUsername,
+    "--password",                $PlainPwd,
     "--authenticationMechanism", "PLAIN",
-    "--authenticationDatabase", "`$external",
-    "--tlsCAFile", $DunsSslCAFile,
+    "--authenticationDatabase",  '$external',
+    "--tlsCAFile",               $DunsSslCAFile,
     "--quiet",
-    "--eval", $JsScript,
-    $MongoshUri
+    "--eval",                    $JsScript
 )
 
 & $DunsMongoshPath @MongoshArgs
@@ -257,7 +258,7 @@ foreach ($Collection in $ToExport) {
         "--username",              $DunsUsername,
         "--password",              $PlainPwd,
         "--authenticationMechanism", "PLAIN",
-        "--authenticationDatabase", "`$external",
+        "--authenticationDatabase", '$external',
         "--uri",                   $ExportUri,
         "--sslCAFile",             $DunsSslCAFile,
         "--db",                    $Database,
