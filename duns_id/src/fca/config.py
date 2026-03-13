@@ -30,18 +30,22 @@ class FCAConfig:
     channel_id: str
     auth_email: str
     auth_key: str
+    correlation_id: str          # set via FCA_CORRELATION_ID or auto-generated
     request_delay_seconds: float = 0.5
 
     @classmethod
     def from_env(cls) -> "FCAConfig":
         """Build config from environment variables.  Raises ValueError if any
         required variable is missing or empty."""
+        import uuid
 
         base_url = os.getenv("FCA_BASE_URL")
         bearer_token = os.getenv("FCA_BEARER_TOKEN")
         channel_id = os.getenv("FCA_CHANNEL_ID")
         auth_email = os.getenv("FCA_AUTH_EMAIL")
         auth_key = os.getenv("FCA_AUTH_KEY")
+        # Optional — fall back to a fresh UUID if not set
+        correlation_id = os.getenv("FCA_CORRELATION_ID") or str(uuid.uuid4())
         request_delay_seconds = float(os.getenv("FCA_REQUEST_DELAY_SECONDS", "0.5"))
 
         missing = [
@@ -69,5 +73,6 @@ class FCAConfig:
             channel_id=channel_id,
             auth_email=auth_email,
             auth_key=auth_key,
+            correlation_id=correlation_id,
             request_delay_seconds=request_delay_seconds,
         )

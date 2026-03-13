@@ -12,7 +12,6 @@
 # =============================================================================
 
 import json
-import uuid
 from typing import Any, Dict, List
 
 import requests
@@ -34,7 +33,7 @@ class FCAClient:
             "Authorization": f"Bearer {self.config.bearer_token}",
             "Content-Type": "application/json",
             "channel-id": self.config.channel_id,
-            "correlation-id": str(uuid.uuid4()),
+            "correlation-id": self.config.correlation_id,
         }
 
     def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
