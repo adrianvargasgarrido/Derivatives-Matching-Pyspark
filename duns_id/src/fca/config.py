@@ -30,7 +30,8 @@ class FCAConfig:
     channel_id: str
     auth_email: str
     auth_key: str
-    correlation_id: str          # set via FCA_CORRELATION_ID or auto-generated
+    correlation_id: str          # set via FCA_CORRELATION_ID or auto-generated UUID
+    ssl_ca_cert: str | None      # path to corporate CA bundle (.pem/.crt), or None to disable verify
     request_delay_seconds: float = 0.5
 
     @classmethod
@@ -47,6 +48,18 @@ class FCAConfig:
         # Optional — fall back to a fresh UUID if not set
         correlation_id = os.getenv("FCA_CORRELATION_ID") or str(uuid.uuid4())
         request_delay_seconds = float(os.getenv("FCA_REQUEST_DELAY_SECONDS", "0.5"))
+
+        # SSL verification:
+        #   FCA_SSL_CA_CERT=/path/to/ca_all.pem  → verify using that cert bundle
+        #   FCA_SSL_CA_CERT=false                 → disable verification (dev only)
+        #   FCA_SSL_CA_CERT not set               → use default Python CA bundle
+        ssl_ca_cert_raw = os.getenv("FCA_SSL_CA_CERT", "").strip()
+        if ssl_ca_cert_raw.lower() == "false":
+            ssl_ca_cert: str | None = "false"   # sentinel — client will pass verify=False
+        elif ssl_ca_cert_raw:
+            ssl_ca_cert = ssl_ca_cert_raw        # path to corporate CA bundle
+        else:
+            ssl_ca_cert = None                  # use default certifi bundle
 
         missing = [
             name
@@ -74,5 +87,6 @@ class FCAConfig:
             auth_email=auth_email,
             auth_key=auth_key,
             correlation_id=correlation_id,
+            ssl_ca_cert=ssl_ca_cert,
             request_delay_seconds=request_delay_seconds,
         )

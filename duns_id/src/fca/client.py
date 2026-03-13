@@ -37,11 +37,23 @@ class FCAClient:
         }
 
     def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # Resolve SSL verification:
+        #   None / path string → pass to requests as verify=
+        #   "false" sentinel   → disable verification (mirrors Insomnia behaviour)
+        ssl_ca = self.config.ssl_ca_cert
+        if ssl_ca == "false":
+            verify: bool | str = False
+        elif ssl_ca:
+            verify = ssl_ca   # path to corporate CA bundle
+        else:
+            verify = True     # default certifi bundle
+
         response = requests.post(
             self.config.base_url,
             headers=self._build_headers(),
             json=payload,
             timeout=self.timeout,
+            verify=verify,
         )
         response.raise_for_status()
         return response.json()
