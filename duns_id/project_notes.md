@@ -20,23 +20,24 @@ Enrich internal entity records with validated **DUNS (Data Universal Numbering S
 
 ```
 INPUT
-  ├── JSON reference files     ← downloaded from D&B / API
-  └── Excel / CSV uploads      ← uploaded from internal system
+  ├── JSON reference files     ← downloaded from D&B / MongoDB
+  ├── Excel / CSV uploads      ← uploaded from internal system
+  └── FCA API responses        ← queried from FCA Broker Gateway
 
-↓ Ingest & Parse
+↓ Step 0 — Export MongoDB collections (PowerShell)
 
-↓ Data Quality Checks
+↓ Step 1 — Consolidate DUNS_LTS JSONs → unified_duns_list.csv
 
-↓ Pre-processing (name normalisation, ID cleaning)
+↓ Step 2 — Enrichment Notebook
+      ├── Left join Excel ↔ unified DUNS ref
+      ├── Match summary (rows + unique CUSTOMER_IDENTIFIER)
+      └── Export enriched + unmatched review files
 
-↓ Matching Layer
-      ├── Exact match on entity ID / tax ID
-      ├── Fuzzy name match (fallback)
-      └── Manual review flag (low confidence)
-
-↓ Output
-      ├── data/output/  ← enriched records, unmatched list, summary
-      └── review/       ← items needing human sign-off
+↓ Step 3 — FCA Broker Lookup (src/fca/)
+      ├── Search by D_CUSTOMER_NAME  → firm hits
+      │   └── For each FRN → fetch registered address
+      ├── OR: direct lookup by reference_number
+      └── Output: search_results, address_results, merged, errors
 ```
 
 ---
@@ -46,6 +47,10 @@ INPUT
 | Date | Decision | Reason |
 |---|---|---|
 | 2026-03-12 | Project created as sub-folder within monorepo | Related domain, shared best practices |
+| 2026-03-12 | PowerShell scripts for MongoDB export | Work machine is Windows; need to download JSON reference data |
+| 2026-03-12 | consolidate_duns.py for JSON merging | Multiple DUNS_LTS collections need to become one unified list |
+| 2026-03-12 | Enrichment notebook (pandas) | Quick local exploration; no Spark needed for this volume |
+| 2026-03-13 | FCA Broker Lookup module (`src/fca/`) | Need FCA reference numbers / addresses for customers — lookup by `D_CUSTOMER_NAME` or existing `reference_number` |
 | | | |
 
 ---

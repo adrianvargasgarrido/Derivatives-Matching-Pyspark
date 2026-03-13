@@ -58,3 +58,8 @@ duns_id/review/*
 
 # root markdown files in duns_id
 !duns_id/*.md
+
+# .env.example and requirements.txt — tracked; .env — NEVER tracked
+!duns_id/.env.example
+!duns_id/requirements.txt
+duns_id/.env
