@@ -22,9 +22,10 @@ from .config import FCAConfig
 class FCAClient:
     """Stateless client for the FCA Broker Query API gateway."""
 
-    def __init__(self, config: FCAConfig, timeout: int = 30) -> None:
+    def __init__(self, config: FCAConfig, timeout: int = 30, debug: bool = True) -> None:
         self.config = config
         self.timeout = timeout
+        self.debug = debug
 
     # ── internal helpers ─────────────────────────────────────────────────────
 
@@ -37,9 +38,7 @@ class FCAClient:
         }
 
     def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        # Resolve SSL verification:
-        #   None / path string → pass to requests as verify=
-        #   "false" sentinel   → disable verification (mirrors Insomnia behaviour)
+        # Resolve SSL verification
         ssl_ca = self.config.ssl_ca_cert
         if ssl_ca == "false":
             verify: bool | str = False
@@ -48,13 +47,34 @@ class FCAClient:
         else:
             verify = True     # default certifi bundle
 
+        headers = self._build_headers()
+        url = self.config.base_url
+
+        # ── DEBUG: print exactly what we are sending ──────────────────────────
+        if self.debug:
+            print("\n" + "─" * 60)
+            print("DEBUG REQUEST")
+            print("─" * 60)
+            print(f"URL     : {url}")
+            print(f"VERIFY  : {verify}")
+            print(f"HEADERS : {json.dumps(headers, indent=2)}")
+            print(f"PAYLOAD : {json.dumps(payload, indent=2)}")
+            print("─" * 60)
+
         response = requests.post(
-            self.config.base_url,
-            headers=self._build_headers(),
+            url,
+            headers=headers,
             json=payload,
             timeout=self.timeout,
             verify=verify,
         )
+
+        # ── DEBUG: print what we got back ─────────────────────────────────────
+        if self.debug:
+            print(f"STATUS  : {response.status_code}")
+            print(f"RESPONSE: {response.text[:2000]}")
+            print("─" * 60)
+
         response.raise_for_status()
         return response.json()
 
