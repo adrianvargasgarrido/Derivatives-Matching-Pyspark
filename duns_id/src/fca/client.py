@@ -118,7 +118,7 @@ class FCAClient:
                 "pagenp": page,
             },
             "authEmail": self.config.auth_email,
-            "authkey": self.config.auth_key,
+            "authKey": self.config.auth_key,
         }
 
         response_json = self._post(payload)
@@ -138,7 +138,7 @@ class FCAClient:
                 "pagenp": page,
             },
             "authEmail": self.config.auth_email,
-            "authkey": self.config.auth_key,
+            "authKey": self.config.auth_key,
         }
 
         response_json = self._post(payload)
